@@ -13,9 +13,104 @@ $('date').value=toLocalDate();
 $('entry').addEventListener('submit',async e=>{e.preventDefault();$('entryMsg').textContent='Saving…';try{const files=Array.from($('photos').files);if(files.length>5)throw Error('Maximum 5 photos per return.');for(const f of files)if(f.size>8_000_000)throw Error('Each photo must be under 8 MB.');const r={id:crypto.randomUUID(),created:new Date().toISOString(),photos:files.map((f,i)=>({name:f.name||`photo_${i+1}.jpg`,type:f.type||'image/jpeg',blob:f}))};for(const k of fields)r[k]=$(k).value.trim();if(!r.event||!r.rma)throw Error('Event ID and RMA are required.');await save(r);$('entry').reset();$('date').value=toLocalDate();$('location').value='Wimans Bil AB, Västerås';$('entryMsg').textContent='Return saved on this iPhone.';await render()}catch(err){$('entryMsg').textContent='Save failed: '+err.message}});
 $('items').addEventListener('click',async e=>{const id=e.target.dataset.delete;if(!id)return;if(confirm('Permanently delete this saved return and its photos?')){await del(id);await render()}});
 $('gpsBtn').addEventListener('click',()=>{if(!navigator.geolocation){$('entryMsg').textContent='GPS not available.';return} $('entryMsg').textContent='Requesting location…';navigator.geolocation.getCurrentPosition(p=>{$('gps').value=`${p.coords.latitude.toFixed(6)}, ${p.coords.longitude.toFixed(6)} (±${Math.round(p.coords.accuracy)} m)`;$('entryMsg').textContent='GPS position captured.'},e=>$('entryMsg').textContent='GPS unavailable: '+e.message,{enableHighAccuracy:true,timeout:20000,maximumAge:0})});
-let target=null;async function stopScan(){if(scanTimer){clearInterval(scanTimer);scanTimer=null}if(scanStream){scanStream.getTracks().forEach(t=>t.stop());scanStream=null}$('video').srcObject=null;$('scanner').close()}
-$('closeScanner').addEventListener('click',stopScan);
-document.querySelectorAll('.scan').forEach(b=>b.addEventListener('click',async()=>{target=b.dataset.target;if(!('BarcodeDetector' in window)){$('entryMsg').textContent='This Safari version does not support live barcode detection. Type the code manually or use a compatible scanner.';return}try{const formats=await BarcodeDetector.getSupportedFormats();const wanted=['code_128','code_39','ean_13','ean_8','qr_code','itf','data_matrix'].filter(x=>formats.includes(x));if(!wanted.length)throw Error('No supported barcode formats');const detector=new BarcodeDetector({formats:wanted});scanStream=await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:'environment'}},audio:false});$('video').srcObject=scanStream;$('scanner').showModal();scanTimer=setInterval(async()=>{try{if($('video').readyState<2)return;const codes=await detector.detect($('video'));if(codes.length){$(target).value=codes[0].rawValue;await stopScan();$('entryMsg').textContent=`Barcode scanned into ${target}.`}}catch(_){}},350)}catch(err){await stopScan();$('entryMsg').textContent='Scanner unavailable: '+err.message}}));
+// iPhone-compatible scanner: native BarcodeDetector when available, ZXing fallback.
+// ZXing loads from a CDN on first use; the service worker caches it for subsequent offline use.
+let target=null, zxingReader=null, scanBusy=false, scanSession=0;
+const ZXING_URL='https://cdn.jsdelivr.net/npm/@zxing/library@0.21.3/umd/index.min.js';
+function scanStatus(message){$('scanMsg').textContent=message}
+function loadZxing(){
+  if(window.ZXing?.BrowserMultiFormatReader)return Promise.resolve();
+  if(window._porZxingPromise)return window._porZxingPromise;
+  window._porZxingPromise=new Promise((resolve,reject)=>{
+    const script=document.createElement('script');script.src=ZXING_URL;script.async=true;
+    script.onload=()=>window.ZXing?.BrowserMultiFormatReader?resolve():reject(Error('Scanner library did not initialize.'));
+    script.onerror=()=>reject(Error('Scanner library could not be loaded. Connect to the internet once and try again.'));
+    document.head.appendChild(script);
+  }).catch(e=>{window._porZxingPromise=null;throw e});
+  return window._porZxingPromise;
+}
+async function stopScan(){
+  ++scanSession;
+  if(scanTimer){clearInterval(scanTimer);scanTimer=null}
+  if(zxingReader){try{zxingReader.reset()}catch(_){}zxingReader=null}
+  if(scanStream){scanStream.getTracks().forEach(t=>t.stop());scanStream=null}
+  const video=$('video');if(video.srcObject){video.srcObject.getTracks().forEach(t=>t.stop());video.srcObject=null}
+  try{video.pause()}catch(_){}
+  if($('scanner').open)$('scanner').close();
+  scanBusy=false;
+}
+function scannedValue(value,session){
+  if(session!==scanSession||!value||!target)return;
+  $(target).value=String(value).trim();
+  $('entryMsg').textContent=`Barcode scanned into ${target}.`;
+  if(navigator.vibrate)navigator.vibrate(80);
+  stopScan();
+}
+$('closeScanner').addEventListener('click',()=>stopScan());
+$('scanner').addEventListener('cancel',e=>{e.preventDefault();stopScan()});
+async function startNative(session){
+  if(!('BarcodeDetector' in window))return false;
+  let detector;
+  try{
+    const formats=await BarcodeDetector.getSupportedFormats();
+    const wanted=['code_128','code_39','ean_13','ean_8','qr_code','itf','data_matrix','upc_a','upc_e'].filter(x=>formats.includes(x));
+    if(!wanted.length)return false;
+    detector=new BarcodeDetector({formats:wanted});
+  }catch(_){return false}
+  scanStream=await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:'environment'}},audio:false});
+  if(session!==scanSession){scanStream.getTracks().forEach(t=>t.stop());scanStream=null;return true}
+  const video=$('video');video.srcObject=scanStream;await video.play();
+  scanStatus('Aim the rear camera at the barcode. Hold steady in good light.');
+  let detecting=false;
+  scanTimer=setInterval(async()=>{
+    if(detecting||session!==scanSession||video.readyState<2)return;
+    detecting=true;
+    try{const codes=await detector.detect(video);if(codes.length)scannedValue(codes[0].rawValue,session)}catch(_){}
+    finally{detecting=false}
+  },250);
+  return true;
+}
+async function startZxing(session){
+  scanStatus('Loading iPhone-compatible barcode scanner…');
+  await loadZxing();
+  if(session!==scanSession)return;
+  zxingReader=new window.ZXing.BrowserMultiFormatReader();
+  scanStatus('Starting rear camera…');
+  // decodeFromConstraints uses the rear camera when available and streams results to the input.
+  await zxingReader.decodeFromConstraints({audio:false,video:{facingMode:{ideal:'environment'}}},'video',(result,error)=>{
+    if(session!==scanSession)return;
+    if(result)scannedValue(result.getText(),session);
+    else if(error && error.name && !['NotFoundException','ChecksumException','FormatException'].includes(error.name)){
+      scanStatus('Searching for barcode… Hold it steady and improve lighting.');
+    }
+  });
+  if(session===scanSession)scanStatus('Aim at Code 128, Code 39, EAN or QR. Hold steady.');
+}
+document.querySelectorAll('.scan').forEach(button=>button.addEventListener('click',async()=>{
+  if(scanBusy)return;
+  scanBusy=true;
+  target=button.dataset.target;
+  const session=++scanSession;
+  const dialog=$('scanner');
+  try{
+    if(!window.isSecureContext||!navigator.mediaDevices?.getUserMedia)throw Error('Camera requires HTTPS in Safari on iPhone.');
+    dialog.showModal();
+    scanStatus('Requesting camera access…');
+    let nativeStarted=false;
+    try{nativeStarted=await startNative(session)}catch(e){
+      // Permission errors must be shown rather than masked by a library fallback.
+      if(['NotAllowedError','NotFoundError','NotReadableError'].includes(e.name))throw e;
+      if(scanStream){scanStream.getTracks().forEach(t=>t.stop());scanStream=null}
+    }
+    if(session!==scanSession)return;
+    if(!nativeStarted)await startZxing(session);
+  }catch(e){
+    const detail=e.name==='NotAllowedError'?'Camera access denied. Allow camera access in Safari settings and retry.':e.message;
+    $('entryMsg').textContent='Scanner unavailable: '+detail;
+    if(dialog.open)scanStatus('Scanner unavailable: '+detail);
+    scanBusy=false;
+  }
+}));
 // ZIP writer (STORE, no compression). Files and JSON/CSV are bundled without external dependencies.
 const encoder=new TextEncoder();const utf8=s=>encoder.encode(s);const u16=(n)=>[n&255,(n>>>8)&255];const u32=n=>[n&255,(n>>>8)&255,(n>>>16)&255,(n>>>24)&255];
 let crcTable;function crc32(a){if(!crcTable){crcTable=Array.from({length:256},(_,n)=>{for(let i=0;i<8;i++)n=n&1?0xedb88320^(n>>>1):n>>>1;return n>>>0})}let c=0xffffffff;for(const b of a)c=crcTable[(c^b)&255]^(c>>>8);return(c^0xffffffff)>>>0}
@@ -25,6 +120,41 @@ async function makePackage(){const records=await getAll();if(!records.length)thr
 function fileName(){return `HPE_POR_Mobile_${toLocalDate()}.zip`}
 function download(blob,name){const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=name;document.body.append(a);a.click();setTimeout(()=>{URL.revokeObjectURL(a.href);a.remove()},2000)}
 $('download').addEventListener('click',async()=>{try{$('sendMsg').textContent='Preparing export…';download(await makePackage(),fileName());$('sendMsg').textContent='ZIP package downloaded. It contains POR_Import.csv, manifest and proof photos.'}catch(e){$('sendMsg').textContent=e.message}});
+// Complete, portable JSON backup. Photo contents are embedded as base64 data URLs.
+async function blobToDataUrl(blob){return new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(reader.result);reader.onerror=()=>reject(reader.error||Error('Could not read photo'));reader.readAsDataURL(blob)})}
+async function createJsonBackup(){
+  const records=await getAll();
+  const output=[];
+  for(const record of records){
+    const copy={...record,photos:[]};
+    for(const photo of (record.photos||[])){
+      if(!photo.blob)throw Error('Photo data is missing for a saved return. Backup cancelled.');
+      copy.photos.push({name:photo.name,type:photo.type||photo.blob.type||'application/octet-stream',dataUrl:await blobToDataUrl(photo.blob)});
+    }
+    output.push(copy);
+  }
+  return {format:'HPE-POR-MOBILE-BACKUP-1',exportedAt:new Date().toISOString(),recordCount:output.length,records:output};
+}
+$('backup').addEventListener('click',async()=>{
+  const message=$('sendMsg');
+  try{
+    if(!db)throw Error('Device storage is not available.');
+    message.textContent='Creating complete JSON backup, including photos…';
+    const backup=await createJsonBackup();
+    const name=`HPE_POR_Backup_${toLocalDate()}.json`;
+    const blob=new Blob([JSON.stringify(backup,null,2)],{type:'application/json'});
+    const file=new File([blob],name,{type:'application/json'});
+    if(navigator.share && navigator.canShare?.({files:[file]})){
+      try{
+        await navigator.share({files:[file],title:'HPE POR Mobile backup'});
+        message.textContent=`Backup prepared: ${backup.recordCount} returns. Save the JSON file in Files/iCloud Drive. Existing returns were not deleted.`;
+      }catch(e){if(e.name==='AbortError'){message.textContent='Backup sharing cancelled. No returns were deleted.';return}throw e}
+    }else{
+      download(blob,name);
+      message.textContent=`JSON backup downloaded: ${backup.recordCount} returns. Save it in a private location. Existing returns were not deleted.`;
+    }
+  }catch(e){message.textContent='Backup failed: '+e.message}
+});
 $('send').addEventListener('click',async()=>{try{$('sendMsg').textContent='Preparing email package…';const blob=await makePackage();const file=new File([blob],fileName(),{type:'application/zip'});if(navigator.canShare?.({files:[file]})&&navigator.share){await navigator.share({files:[file],title:'HPE POR Mobile Returns',text:'Send to mikael.politi@hemmersbach.com. Attached: POR import package with photos.'});$('sendMsg').textContent='Share sheet opened. Choose Mail/Outlook, enter mikael.politi@hemmersbach.com, and send. Returns remain saved until you delete them.'}else{download(blob,file.name);const subject=encodeURIComponent('HPE POR Mobile - Return registrations');const body=encodeURIComponent('Please find the HPE POR Mobile export attached. Attach the downloaded '+file.name+' file before sending.');location.href=`mailto:mikael.politi@hemmersbach.com?subject=${subject}&body=${body}`;$('sendMsg').textContent='ZIP downloaded. Attach it to the email manually. The mailto link cannot attach files automatically.'}}catch(e){$('sendMsg').textContent=e.name==='AbortError'?'Sharing cancelled; returns remain saved.':'Email export failed: '+e.message}});
 function network(){ $('net').textContent=navigator.onLine?'Online':'Offline'}window.addEventListener('online',network);window.addEventListener('offline',network);network();
 (async()=>{try{db=await openDb();await render()}catch(e){$('entryMsg').textContent='Device storage unavailable: '+e.message}})();if('serviceWorker' in navigator&&location.protocol==='https:')navigator.serviceWorker.register('./sw.js').catch(()=>{});
