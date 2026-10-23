@@ -7,7 +7,17 @@ function getAll(){return new Promise((resolve,reject)=>{const r=tx('readonly').g
 function save(record){return new Promise((resolve,reject)=>{const r=tx('readwrite').put(record);r.onsuccess=resolve;r.onerror=()=>reject(r.error)})}
 function del(id){return new Promise((resolve,reject)=>{const r=tx('readwrite').delete(id);r.onsuccess=resolve;r.onerror=()=>reject(r.error)})}
 function safe(s){return String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
-async function render(){const a=await getAll();$('count').textContent=a.length;$('items').innerHTML=a.length?a.map(r=>`<div class="item"><div><b>${safe(r.event)} / ${safe(r.rma)}</b><small>${safe(r.date)} · ${safe(r.location)} · ${r.photos.length} photo(s)</small></div><button data-delete="${r.id}">Delete</button></div>`).join(''):'<p class="muted">No saved returns yet.</p>'}
+async function render(){
+  const records=await getAll();
+  const query=($('searchReturns').value||'').trim().toLocaleLowerCase();
+  const keys=['event','rma','part','serial','tracking','date','location','notes','gps'];
+  const visible=query?records.filter(r=>keys.some(key=>String(r[key]??'').toLocaleLowerCase().includes(query))):records;
+  $('count').textContent=records.length;
+  $('searchCount').textContent=query?`${visible.length} of ${records.length} returns match.`:`${records.length} saved returns.`;
+  $('items').innerHTML=visible.length?visible.map(r=>`<div class="item"><div><b>${safe(r.event)} / ${safe(r.rma)}</b><small>${safe(r.date)} · ${safe(r.location)} · ${(r.photos||[]).length} photo(s)</small><small>Part: ${safe(r.part||'—')} · Serial: ${safe(r.serial||'—')}</small><small>Tracking: ${safe(r.tracking||'—')}</small></div><button data-delete="${safe(r.id)}">Delete</button></div>`).join(''):(query?'<p class="muted">No matching returns. Try another search.</p>':'<p class="muted">No saved returns yet.</p>');
+}
+$('searchReturns').addEventListener('input',()=>render().catch(e=>{$('searchCount').textContent='Search failed: '+e.message}));
+
 function toLocalDate(){const d=new Date();return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`}
 $('date').value=toLocalDate();
 $('entry').addEventListener('submit',async e=>{e.preventDefault();$('entryMsg').textContent='Saving…';try{const files=Array.from($('photos').files);if(files.length>5)throw Error('Maximum 5 photos per return.');for(const f of files)if(f.size>8_000_000)throw Error('Each photo must be under 8 MB.');const r={id:crypto.randomUUID(),created:new Date().toISOString(),photos:files.map((f,i)=>({name:f.name||`photo_${i+1}.jpg`,type:f.type||'image/jpeg',blob:f}))};for(const k of fields)r[k]=$(k).value.trim();if(!r.event||!r.rma)throw Error('Event ID and RMA are required.');await save(r);$('entry').reset();$('date').value=toLocalDate();$('location').value='Wimans Bil AB, Västerås';$('entryMsg').textContent='Return saved on this iPhone.';await render()}catch(err){$('entryMsg').textContent='Save failed: '+err.message}});
