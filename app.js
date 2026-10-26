@@ -127,9 +127,28 @@ let crcTable;function crc32(a){if(!crcTable){crcTable=Array.from({length:256},(_
 function zip(files){let parts=[],central=[],offset=0;for(const f of files){const name=utf8(f.name),bytes=f.bytes,crc=crc32(bytes),flags=0x0800;const local=new Uint8Array([80,75,3,4,...u16(20),...u16(flags),...u16(0),...u16(0),...u16(0),...u32(crc),...u32(bytes.length),...u32(bytes.length),...u16(name.length),...u16(0)]);parts.push(local,name,bytes);central.push(new Uint8Array([80,75,1,2,...u16(20),...u16(20),...u16(flags),...u16(0),...u16(0),...u16(0),...u32(crc),...u32(bytes.length),...u32(bytes.length),...u16(name.length),...u16(0),...u16(0),...u16(0),...u16(0),...u32(0),...u32(offset)]),name);offset+=local.length+name.length+bytes.length}const csize=central.reduce((a,b)=>a+b.length,0);return new Blob([...parts,...central,new Uint8Array([80,75,5,6,...u16(0),...u16(0),...u16(files.length),...u16(files.length),...u32(csize),...u32(offset),...u16(0)])],{type:'application/zip'})}
 function csvCell(x){return '"'+String(x??'').replace(/"/g,'""')+'"'}
 async function makePackage(){const records=await getAll();if(!records.length)throw Error('No saved returns.');const cols=['event_id','rma','part_number','serial_number','return_date','sent_by','tracking','status','comments','return_location','gps','mobile_id','created_at'];const lines=[cols.map(csvCell).join(',')];const files=[];const manifest=[];for(const r of records){const values=[r.event,r.rma,r.part,r.serial,r.date,'Mikael Politi',r.tracking,'Shipped',r.notes,r.location,r.gps,r.id,r.created];lines.push(values.map(csvCell).join(','));const photos=[];for(let i=0;i<r.photos.length;i++){const p=r.photos[i],ext=(p.name.match(/\.[a-z0-9]{1,8}$/i)||['.jpg'])[0].toLowerCase();const name=`photos/${r.id}/${i+1}${ext}`;files.push({name,bytes:new Uint8Array(await p.blob.arrayBuffer())});photos.push(name)}manifest.push({id:r.id,created:r.created,event_id:r.event,rma:r.rma,part_number:r.part,serial_number:r.serial,tracking:r.tracking,return_date:r.date,return_location:r.location,gps:r.gps,comments:r.notes,photos})}files.unshift({name:'POR_Import.csv',bytes:utf8('\ufeff'+lines.join('\r\n'))},{name:'POR_Mobile_Manifest.json',bytes:utf8(JSON.stringify({format:'HPE-POR-MOBILE-1',generated:new Date().toISOString(),records:manifest},null,2))});return zip(files)}
+// Native Excel workbook for email sharing; all identifiers remain text to preserve leading zeros.
+function excelXml(value){return String(value??'').replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]/g,'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&apos;')}
+function excelColumn(index){let result='';while(index){index--;result=String.fromCharCode(65+index%26)+result;index=Math.floor(index/26)}return result}
+async function makeExcel(){
+  const records=await getAll();if(!records.length)throw Error('No saved returns.');
+  const headers=['Event ID','RMA Number','Part Number','Serial Number','Return Date','Sent By','Tracking Number','Status','Comments','Return Location','GPS','Mobile ID','Created At'];
+  const rows=[headers,...records.map(r=>[r.event,r.rma,r.part,r.serial,r.date,'Mikael Politi',r.tracking,'Shipped',r.notes,r.location,r.gps,r.id,r.created])];
+  const xmlRows=rows.map((values,index)=>'<row r="'+(index+1)+'">'+values.map((value,col)=>'<c r="'+excelColumn(col+1)+(index+1)+'" t="inlineStr"><is><t xml:space="preserve">'+excelXml(value)+'</t></is></c>').join('')+'</row>').join('');
+  const sheet='<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetViews><sheetView workbookViewId="0"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews><sheetData>'+xmlRows+'</sheetData><autoFilter ref="A1:M'+rows.length+'"/></worksheet>';
+  const files=[
+    {name:'[Content_Types].xml',bytes:utf8('<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/></Types>')},
+    {name:'_rels/.rels',bytes:utf8('<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>')},
+    {name:'xl/workbook.xml',bytes:utf8('<?xml version="1.0" encoding="UTF-8"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="POR Returns" sheetId="1" r:id="rId1"/></sheets></workbook>')},
+    {name:'xl/_rels/workbook.xml.rels',bytes:utf8('<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/></Relationships>')},
+    {name:'xl/worksheets/sheet1.xml',bytes:utf8(sheet)}
+  ];
+  return zip(files);
+}
+function excelFileName(){return `HPE_POR_Mobile_${toLocalDate()}.xlsx`}
 function fileName(){return `HPE_POR_Mobile_${toLocalDate()}.zip`}
 function download(blob,name){const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=name;document.body.append(a);a.click();setTimeout(()=>{URL.revokeObjectURL(a.href);a.remove()},2000)}
-$('download').addEventListener('click',async()=>{try{$('sendMsg').textContent='Preparing export…';download(await makePackage(),fileName());$('sendMsg').textContent='ZIP package downloaded. It contains POR_Import.csv, manifest and proof photos.'}catch(e){$('sendMsg').textContent=e.message}});
+$('download').addEventListener('click',async()=>{try{$('sendMsg').textContent='Preparing Excel workbook…';download(await makeExcel(),excelFileName());$('sendMsg').textContent='Excel workbook downloaded (.xlsx). Saved returns are unchanged. Photos are not included; use JSON backup to preserve photos.'}catch(e){$('sendMsg').textContent='Excel download failed: '+e.message}});
 // Complete, portable JSON backup. Photo contents are embedded as base64 data URLs.
 async function blobToDataUrl(blob){return new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(reader.result);reader.onerror=()=>reject(reader.error||Error('Could not read photo'));reader.readAsDataURL(blob)})}
 async function createJsonBackup(){
@@ -165,6 +184,21 @@ $('backup').addEventListener('click',async()=>{
     }
   }catch(e){message.textContent='Backup failed: '+e.message}
 });
-$('send').addEventListener('click',async()=>{try{$('sendMsg').textContent='Preparing email package…';const blob=await makePackage();const file=new File([blob],fileName(),{type:'application/zip'});if(navigator.canShare?.({files:[file]})&&navigator.share){await navigator.share({files:[file],title:'HPE POR Mobile Returns',text:'Send to mikael.politi@hemmersbach.com. Attached: POR import package with photos.'});$('sendMsg').textContent='Share sheet opened. Choose Mail/Outlook, enter mikael.politi@hemmersbach.com, and send. Returns remain saved until you delete them.'}else{download(blob,file.name);const subject=encodeURIComponent('HPE POR Mobile - Return registrations');const body=encodeURIComponent('Please find the HPE POR Mobile export attached. Attach the downloaded '+file.name+' file before sending.');location.href=`mailto:mikael.politi@hemmersbach.com?subject=${subject}&body=${body}`;$('sendMsg').textContent='ZIP downloaded. Attach it to the email manually. The mailto link cannot attach files automatically.'}}catch(e){$('sendMsg').textContent=e.name==='AbortError'?'Sharing cancelled; returns remain saved.':'Email export failed: '+e.message}});
+$('send').addEventListener('click',async()=>{try{
+  $('sendMsg').textContent='Preparing Excel attachment…';
+  const blob=await makeExcel();
+  const file=new File([blob],excelFileName(),{type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'});
+  if(navigator.share&&navigator.canShare?.({files:[file]})){
+    await navigator.share({files:[file],title:'HPE POR Mobile Returns',text:'Send to mikael.politi@hemmersbach.com. Excel workbook attached.'});
+    $('sendMsg').textContent='Share sheet opened. Choose Mail/Outlook and send the Excel attachment. Photos are not included in the workbook; use Create complete JSON backup for photos. Saved returns are unchanged.';
+  }else{
+    download(blob,file.name);
+    const subject=encodeURIComponent('HPE POR Mobile - Return registrations');
+    const body=encodeURIComponent('Please find the HPE POR Mobile Excel workbook attached. Attach the downloaded '+file.name+' before sending.');
+    location.href=`mailto:mikael.politi@hemmersbach.com?subject=${subject}&body=${body}`;
+    $('sendMsg').textContent='Excel downloaded. Attach the .xlsx file manually to your email. Photos are preserved in the complete JSON backup.';
+  }
+}catch(e){$('sendMsg').textContent=e.name==='AbortError'?'Sharing cancelled; returns remain saved.':'Excel email export failed: '+e.message}});
+
 function network(){ $('net').textContent=navigator.onLine?'Online':'Offline'}window.addEventListener('online',network);window.addEventListener('offline',network);network();
 (async()=>{try{db=await openDb();await render()}catch(e){$('entryMsg').textContent='Device storage unavailable: '+e.message}})();if('serviceWorker' in navigator&&location.protocol==='https:')navigator.serviceWorker.register('./sw.js').catch(()=>{});
