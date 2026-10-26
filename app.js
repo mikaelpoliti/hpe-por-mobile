@@ -202,7 +202,7 @@ $('send').addEventListener('click',async()=>{try{
 
 function network(){ $('net').textContent=navigator.onLine?'Online':'Offline'}window.addEventListener('online',network);window.addEventListener('offline',network);network();
 (async()=>{try{db=await openDb();await render()}catch(e){$('entryMsg').textContent='Device storage unavailable: '+e.message}})();if ('serviceWorker' in navigator && location.protocol === 'https:') {
-  navigator.serviceWorker.register('./sw.js?v=6', { updateViaCache: 'none' })
+  navigator.serviceWorker.register('./sw.js?v=7', { updateViaCache: 'none' })
     .then(reg => reg.update()).catch(() => {});
   let reloadedForUpdate = false;
   navigator.serviceWorker.addEventListener('controllerchange', () => {

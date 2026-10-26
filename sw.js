@@ -1,6 +1,6 @@
 // HPE POR Mobile v6: online-first, offline fallback. No app data is deleted.
-const CACHE = 'hpe-por-mobile-excel-v6';
-const ASSETS = ['./', './index.html', './style.css?v=6', './app.js?v=6', './manifest.webmanifest?v=6', './icon-192.png', './icon-512.png'];
+const CACHE = 'hpe-por-mobile-excel-v7';
+const ASSETS = ['./', './index.html', './style.css?v=7', './app.js?v=7', './manifest.webmanifest?v=7', './icon-192.png', './icon-512.png'];
 self.addEventListener('install', event => {
   event.waitUntil(caches.open(CACHE).then(cache => cache.addAll(ASSETS)).then(() => self.skipWaiting()));
 });
