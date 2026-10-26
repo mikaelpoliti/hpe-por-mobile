@@ -201,4 +201,11 @@ $('send').addEventListener('click',async()=>{try{
 }catch(e){$('sendMsg').textContent=e.name==='AbortError'?'Sharing cancelled; returns remain saved.':'Excel email export failed: '+e.message}});
 
 function network(){ $('net').textContent=navigator.onLine?'Online':'Offline'}window.addEventListener('online',network);window.addEventListener('offline',network);network();
-(async()=>{try{db=await openDb();await render()}catch(e){$('entryMsg').textContent='Device storage unavailable: '+e.message}})();if('serviceWorker' in navigator&&location.protocol==='https:')navigator.serviceWorker.register('./sw.js').catch(()=>{});
+(async()=>{try{db=await openDb();await render()}catch(e){$('entryMsg').textContent='Device storage unavailable: '+e.message}})();if ('serviceWorker' in navigator && location.protocol === 'https:') {
+  navigator.serviceWorker.register('./sw.js?v=6', { updateViaCache: 'none' })
+    .then(reg => reg.update()).catch(() => {});
+  let reloadedForUpdate = false;
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (!reloadedForUpdate) { reloadedForUpdate = true; location.reload(); }
+  });
+}
